@@ -49,7 +49,7 @@ def test_streams_timed_cues_and_forces_timestamps(setup):
     assert cues[0].text == "hello"
     assert cues[0].start_seconds == 0.25
     assert cues[0].end_seconds == 1.5
-    assert calls[0][1] == {"return_timestamps": True, "task": "translate"}
+    assert calls[0][1] == {"return_timestamps": True, "task": "transcribe"}
 
 
 def test_chunk_offsets_survive_skipped_silence(monkeypatch, setup):
@@ -152,3 +152,30 @@ def test_missing_file_is_diagnostic(setup):
     kwargs["request"].input_path.unlink()
     assert service.execute_transcribe_file(**kwargs).exit_code == 2
     assert not calls
+
+
+def test_progress_includes_silence_and_final_partial_chunk(monkeypatch, setup):
+    kwargs, windows, calls, cues = setup
+    windows[:] = [
+        MediaChunk(np.zeros(32000, dtype=np.float32), 16000, 0, 2.5),
+        MediaChunk(np.ones(8000, dtype=np.float32), 16000, 2, 2.5),
+    ]
+    monkeypatch.setattr(service, "preprocess_audio", lambda audio, *args: audio if audio.any() else np.array([], dtype=np.float32))
+    updates = []
+    kwargs["on_progress"] = lambda current, total: updates.append((current, total))
+    assert service.execute_transcribe_file(**kwargs).exit_code == 0
+    assert updates == [(0, 2.5), (2, 2.5), (2, 2.5), (2.5, 2.5)]
+    assert len(calls) == 1
+
+
+def test_failed_inference_does_not_report_chunk_complete(setup):
+    kwargs, windows, calls, cues = setup
+    updates = []
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("failure")
+
+    kwargs["pipe"] = SimpleNamespace(generate=broken)
+    kwargs["on_progress"] = lambda current, total: updates.append((current, total))
+    assert service.execute_transcribe_file(**kwargs).exit_code == 5
+    assert updates == [(0, None)]

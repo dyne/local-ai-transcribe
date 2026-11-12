@@ -10,9 +10,9 @@ import numpy as np
 TARGET_SAMPLE_RATE = 16000
 SUPPORTED_VAD_SAMPLE_RATES = (8000, 16000, 32000, 48000)
 VAD_FRAME_MS = 30
-VAD_MODE = 3
+VAD_MODE = 1
 VAD_MIN_SPEECH_FRAMES = 3
-VAD_MIN_SPEECH_RATIO = 0.2
+VAD_MIN_SPEECH_RATIO = 0.02
 VAD_MIN_UTTERANCE_MS = 180
 VAD_HANGOVER_MS = 300
 NR_IMPORT_ERROR = "Install noisereduce and webrtcvad-wheels."
@@ -239,19 +239,36 @@ def preprocess_audio(
     start: float,
     logger: Callable[[str, bool, float | None], None],
 ) -> np.ndarray:
+    """Denoise and gate speech, preserving valid audio if denoising is unstable."""
     if preprocessor is None:
         return sanitize_audio(audio, context="decode", verbose=verbose, start=start, logger=logger)
     original_audio = sanitize_audio(audio, context="decode", verbose=verbose, start=start, logger=logger)
+    if not np.any(original_audio):
+        # A zero spectrum makes noisereduce's nonstationary gate divide 0 by 0.
+        preprocessor.hangover_frames = 0
+        preprocessor.last_speech_frames = 0
+        preprocessor.last_total_frames = 0
+        preprocessor.last_max_run = 0
+        preprocessor.last_was_hangover = False
+        logger("Audio skipped: digital silence", verbose, start)
+        return np.asarray([], dtype=np.float32)
     logger(
         f"Running noise reduction on {original_audio.shape[0]} samples at {sample_rate} Hz",
         verbose,
         start,
     )
     try:
-        reduced = preprocessor.nr.reduce_noise(y=original_audio, sr=sample_rate)
+        with np.errstate(invalid="raise", divide="raise"):
+            reduced = preprocessor.nr.reduce_noise(y=original_audio, sr=sample_rate)
+    except FloatingPointError as exc:
+        logger(f"Noise reduction bypassed: {exc}; using original audio", verbose, start)
+        reduced = original_audio
     except Exception as exc:
         raise RuntimeError("Noise reduction failed.") from exc
 
+    if not np.isfinite(reduced).all():
+        logger("Noise reduction bypassed: non-finite output; using original audio", verbose, start)
+        reduced = original_audio
     reduced_audio = sanitize_audio(reduced, context="noise reduction", verbose=verbose, start=start, logger=logger)
     if reduced_audio.size == 0:
         return reduced_audio

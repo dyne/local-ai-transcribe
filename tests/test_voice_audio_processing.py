@@ -102,3 +102,108 @@ def test_sanitize_audio_replaces_non_finite_values_and_logs() -> None:
 
     assert audio.tolist() == [0.0, 0.0, 1.0, -1.0]
     assert messages == ["Audio sanitation: replaced 3 non-finite samples after noise reduction"]
+
+
+def make_test_preprocessor(reduce_noise):
+    """Build preprocessing state without importing an audio device or model."""
+    from types import SimpleNamespace
+
+    return audio_processing.AudioPreprocessor(
+        nr=SimpleNamespace(reduce_noise=reduce_noise),
+        vad=object(),
+        vad_mode=1,
+        min_speech_frames=3,
+        min_speech_ratio=0.02,
+        min_utterance_ms=180,
+        hangover_ms=300,
+    )
+
+
+@pytest.mark.parametrize("samples", [0, 16000, 30 * 48000])
+def test_digital_silence_skips_denoiser_and_clears_stale_speech_state(samples):
+    def unexpected_denoise(**kwargs):
+        raise AssertionError("Digital silence must not enter noise reduction")
+
+    preprocessor = make_test_preprocessor(unexpected_denoise)
+    preprocessor.hangover_frames = 10
+    preprocessor.last_speech_frames = 5
+    preprocessor.last_total_frames = 10
+    preprocessor.last_max_run = 5
+    preprocessor.last_was_hangover = True
+    messages = []
+    output = audio_processing.preprocess_audio(
+        np.zeros(samples, dtype=np.float32), 48000, preprocessor,
+        True, 0, lambda message, *args: messages.append(message),
+    )
+    assert output.size == 0
+    assert output.dtype == np.float32
+    assert preprocessor.hangover_frames == 0
+    assert preprocessor.last_speech_frames == 0
+    assert preprocessor.last_total_frames == 0
+    assert preprocessor.last_max_run == 0
+    assert preprocessor.last_was_hangover is False
+    assert messages == ["Audio skipped: digital silence"]
+
+
+@pytest.mark.parametrize("operation", ["invalid", "divide"])
+def test_invalid_noise_reduction_falls_back_without_warning(monkeypatch, operation):
+    import warnings
+
+    original = np.array([0.1, -0.2, 0.3], dtype=np.float32)
+    old_error_policy = np.geterr().copy()
+    messages = []
+    gated = []
+
+    def unstable_denoise(**kwargs):
+        numerator = 0.0 if operation == "invalid" else 1.0
+        return np.divide(np.array([numerator]), np.zeros(1))
+
+    def speech_detected(original_audio, reduced_audio, *args):
+        gated.append(reduced_audio.copy())
+        return True
+
+    monkeypatch.setattr(audio_processing, "_speech_detected", speech_detected)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        output = audio_processing.preprocess_audio(
+            original, 16000, make_test_preprocessor(unstable_denoise),
+            True, 0, lambda message, *args: messages.append(message),
+        )
+    np.testing.assert_array_equal(output, original)
+    np.testing.assert_array_equal(gated[0], original)
+    assert np.isfinite(output).all()
+    assert np.geterr() == old_error_policy
+    assert any("Noise reduction bypassed:" in message for message in messages)
+
+
+def test_nonfinite_denoiser_output_preserves_original_speech(monkeypatch):
+    original = np.array([0.1, -0.2, 0.3], dtype=np.float32)
+    preprocessor = make_test_preprocessor(lambda **kwargs: np.array([np.nan, np.inf, -np.inf], dtype=np.float32))
+    monkeypatch.setattr(audio_processing, "_speech_detected", lambda *args: True)
+    output = audio_processing.preprocess_audio(original, 16000, preprocessor, False, 0, lambda *args: None)
+    np.testing.assert_array_equal(output, original)
+
+
+def test_near_silent_audio_is_not_discarded_by_amplitude_threshold(monkeypatch):
+    original = np.full(160, 1e-30, dtype=np.float32)
+    calls = []
+
+    def denoise(**kwargs):
+        calls.append(kwargs["y"].copy())
+        return kwargs["y"]
+
+    monkeypatch.setattr(audio_processing, "_speech_detected", lambda *args: True)
+    output = audio_processing.preprocess_audio(original, 16000, make_test_preprocessor(denoise), False, 0, lambda *args: None)
+    np.testing.assert_array_equal(calls[0], original)
+    np.testing.assert_array_equal(output, original)
+
+
+def test_other_noise_reduction_errors_remain_diagnostic():
+    def broken_denoise(**kwargs):
+        raise RuntimeError("unrelated failure")
+
+    with pytest.raises(RuntimeError, match="Noise reduction failed"):
+        audio_processing.preprocess_audio(
+            np.ones(160, dtype=np.float32), 16000, make_test_preprocessor(broken_denoise),
+            False, 0, lambda *args: None,
+        )

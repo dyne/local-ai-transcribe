@@ -11,7 +11,7 @@ PIP := $(PYTHON) -m pip
 APP_NAME := local-ai-transcribe
 SCRIPT := $(APP_NAME).py
 SPEC := $(APP_NAME).spec
-REQUIREMENTS := numpy noisereduce webrtcvad-wheels av huggingface_hub[hf_xet] hf_xet
+REQUIREMENTS := numpy noisereduce webrtcvad-wheels av tqdm huggingface_hub[hf_xet] hf_xet
 OPENVINO_PACKAGES := openvino openvino-genai openvino-tokenizers
 
 .PHONY: all install install-build test build run clean

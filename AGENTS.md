@@ -27,22 +27,29 @@ out of scope. Do not restore these dependencies for file transcription.
 
 - Use Python 3.11 for install, test, profiling, and packaging.
 - Keep inference on OpenVINO GenAI and audio mono float32 at 16000 Hz.
+- Always use Whisper's `transcribe` task; do not expose translation options.
+- `-R` / `--recursive` takes directories and discovers eligible media recursively,
+  with case-insensitive extensions and no duplicate paths from overlapping roots.
 - Decode and preprocess before final resampling.
 - Explicit `--model` must never silently fall back to a different model.
 - `--offline` must never download. Reuse the shared Hugging Face cache first.
 - Support `HF_TOKEN`, local OpenVINO exports, and Hugging Face org/repo model IDs.
 - Default devices: NPU,GPU,CPU. Default NPU model:
-  OpenVINO/whisper-base.en-int8-ov; GPU/CPU: OpenVINO/whisper-tiny-fp16-ov.
+  OpenVINO/whisper-large-v3-turbo-int8-ov; GPU/CPU: OpenVINO/whisper-tiny-fp16-ov.
 - Print selected device and resolved model path to stderr.
 - Load one runtime per batch, reset preprocessing per file, continue after file
   errors, and return nonzero if any file fails.
 - Write UTF-8 SubRip subtitles beside each input, replacing its extension with
-  `.srt`. `--output-dir` is an optional location override. Never overwrite.
+  `.srt`. `--output-dir` is an optional location override. Ask `Overwrite? (Y/n)`
+  before replacing existing subtitles; Enter means yes, No skips without error.
+  `-y` / `--yes` bypasses prompts. Preserve the original until replacement succeeds.
 - Decode only the first audio stream in bounded windows of at most 30 seconds.
   Do not accumulate complete audio or subtitle history in memory.
 - Always request Whisper segment timestamps and preserve the original media
   timeline, including audio/video offsets and skipped silence.
 - Remove incomplete subtitles on failure or interruption. Diagnostics go to stderr.
+- Render terminal progress with tqdm on stderr, disabled for redirected output;
+  keep progress callbacks independent of terminal presentation in the service.
 
 ## Validation and packaging
 

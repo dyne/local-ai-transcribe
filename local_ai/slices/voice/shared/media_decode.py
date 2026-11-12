@@ -62,6 +62,22 @@ class MediaChunk:
     audio: np.ndarray
     sample_rate: int
     start_seconds: float
+    total_seconds: float | None = None
+
+
+def media_duration_seconds(container: object) -> float | None:
+    """Read the first audio track's end time, falling back to container duration."""
+    origin = (getattr(container, "start_time", None) or 0) / av.time_base
+    streams = getattr(getattr(container, "streams", None), "audio", ())
+    duration = None
+    if streams:
+        stream = streams[0]
+        if stream.duration is not None and stream.time_base is not None:
+            start = origin if stream.start_time is None else float(stream.start_time * stream.time_base)
+            duration = start - origin + float(stream.duration * stream.time_base)
+    if duration is None and getattr(container, "duration", None) is not None:
+        duration = container.duration / av.time_base
+    return duration if duration is not None and math.isfinite(duration) and duration > 0 else None
 
 
 def iter_media_chunks(
@@ -75,6 +91,7 @@ def iter_media_chunks(
         raise ValueError("chunk_seconds must be greater than 0 and at most 30.")
     with open_container(str(path)) as container:
         origin = (getattr(container, "start_time", None) or 0) / av.time_base
+        total_seconds = media_duration_seconds(container)
         buffer = np.empty(0, dtype=np.float32)
         used = 0
         sample_rate = 0
@@ -96,7 +113,7 @@ def iter_media_chunks(
             discontinuity = abs(frame_start - next_time) > max(0.01, 1 / rate)
             if rate != sample_rate or discontinuity:
                 if used:
-                    yield MediaChunk(buffer[:used].copy(), sample_rate, window_start)
+                    yield MediaChunk(buffer[:used].copy(), sample_rate, window_start, total_seconds)
                     used = 0
                 buffer = np.empty(max(1, int(rate * chunk_seconds)), dtype=np.float32)
                 sample_rate = rate
@@ -109,11 +126,11 @@ def iter_media_chunks(
                 used += count
                 position += count
                 if used == buffer.size:
-                    yield MediaChunk(buffer.copy(), sample_rate, window_start)
+                    yield MediaChunk(buffer.copy(), sample_rate, window_start, total_seconds)
                     used = 0
             next_time = frame_start + mono.size / rate
             decoded = True
         if used:
-            yield MediaChunk(buffer[:used].copy(), sample_rate, window_start)
+            yield MediaChunk(buffer[:used].copy(), sample_rate, window_start, total_seconds)
         if not decoded:
             raise ValueError(f"No decodable audio stream found: {path}")

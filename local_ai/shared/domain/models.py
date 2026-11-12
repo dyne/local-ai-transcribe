@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from local_ai.shared.domain.errors import PipelineSetupError
 
 DEFAULT_MODEL_FOR_DEVICE = {
-    "NPU": "whisper-base.en-int8-ov",
+    "NPU": "whisper-large-v3-turbo-int8-ov",
     "GPU": "whisper-tiny-fp16-ov",
     "CPU": "whisper-tiny-fp16-ov",
 }
 DEFAULT_MODEL_REPO_FOR_DEVICE = {
-    "NPU": "OpenVINO/whisper-base.en-int8-ov",
+    "NPU": "OpenVINO/whisper-large-v3-turbo-int8-ov",
     "GPU": "OpenVINO/whisper-tiny-fp16-ov",
     "CPU": "OpenVINO/whisper-tiny-fp16-ov",
 }

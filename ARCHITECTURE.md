@@ -20,8 +20,10 @@ The per-file use case accepts an `on_cue` output port. The CLI supplies an SRT
 writer. The service never collects the full transcript or audio track. Existing
 internal `voice` module names remain to avoid unnecessary renaming of the core.
 
-A batch constructs one Whisper runtime and processes input paths in order. Each
-file gets a new preprocessor so VAD/hangover state cannot leak between files.
+A batch constructs one Whisper runtime and processes input paths in order.
+Recursive input directories are scanned for eligible media extensions; overlapping
+roots are deduplicated before runtime creation. Whisper always transcribes.
+Each file gets a new preprocessor so VAD/hangover state cannot leak between files.
 PyAV decodes the first audio stream into bounded windows of at most 30 seconds.
 It does not decode video. Frame presentation timestamps are normalized to the
 container timeline, preserving A/V offsets and timestamp discontinuities.
@@ -33,7 +35,10 @@ an open-ended last segment ends at the window boundary. SRT serialization rounds
 to milliseconds, keeps cues ordered and non-overlapping, and writes immediately.
 
 File failures remove incomplete output and allow the batch to continue. Existing
-subtitles are never overwritten. Model setup failures stop the batch. Resume is
+subtitles require confirmation (default Yes), unless `-y` / `--yes` is set.
+Declined or unanswered prompts skip the file. Approved overwrites use a temporary
+file in the same directory and replace the original only after success.
+Model setup failures stop the batch. Resume is
 not implemented; failed or interrupted files must restart. Independent windows
 can split utterances and lose cross-window context.
 
@@ -43,11 +48,17 @@ Preserved invariants:
 - Explicit model selection never silently falls back.
 - Offline mode never downloads; cached snapshots precede downloads.
 - Model artifacts are validated before runtime construction.
+- Compiled OpenVINO artifacts persist in a user cache, separated by device;
+  cache settings remain enabled in the CPU pipeline fallback. OpenVINO owns
+  artifact keys and compatibility checks.
 - Inference audio is mono float32 at 16000 Hz.
 - Decoded audio and subtitle memory remain bounded by the processing window.
 - Default output replaces the input extension with `.srt` beside the input.
 - UTF-8 subtitle content goes to disk; diagnostics go to stderr.
 
-No new dependencies are required. The frozen CLI bundles dynamic inference,
+The CLI uses `tqdm` for terminal progress; the transcription service reports
+timeline progress through a callback without depending on terminal presentation.
+Duration metadata is read during decoding, without an extra pass through media.
+The frozen CLI bundles dynamic inference,
 tokenizer, audio preprocessing, and Hugging Face Xet dependencies through
 `local-ai-transcribe.spec`.

@@ -6,8 +6,13 @@ import argparse
 import math
 from pathlib import Path
 import sys
+import tempfile
 import time
+from typing import TextIO
 
+from tqdm import tqdm
+
+from local_ai.model_preparation import model_preparation_progress
 from local_ai.infrastructure.openvino.runtime_env import configure_openvino_runtime_env
 from local_ai.infrastructure.openvino.whisper import create_whisper_runtime, likely_reason_details
 from local_ai.shared.domain.errors import DeviceListRequested, PipelineSetupError
@@ -22,6 +27,7 @@ from local_ai.slices.voice.shared.audio_processing import (
 from local_ai.slices.voice.shared.transcript_policy import setup_error_exit_code
 from local_ai.slices.voice.transcribe_file.request import TranscribeFileRequest
 from local_ai.slices.voice.transcribe_file.service import execute_transcribe_file
+from local_ai.slices.voice.transcribe_file.discovery import discover_media_files
 from local_ai.slices.voice.transcribe_file.subtitles import SrtWriter
 from pyspy_profile import start_py_spy_profile, stop_py_spy_profile
 
@@ -30,15 +36,46 @@ def log(message: str, verbose: bool, start_time: float | None = None) -> None:
     """Write optional progress to stderr."""
     if verbose:
         elapsed = "" if start_time is None else f" t+{time.perf_counter() - start_time:.2f}s"
-        print(f"[transcribe{elapsed}] {message}", file=sys.stderr, flush=True)
+        tqdm.write(f"[transcribe{elapsed}] {message}", file=sys.stderr)
 
 
 def fail(reason: str, details: list[str] | None = None, exit_code: int = 1) -> int:
     """Report a concise diagnostic and return its exit status."""
-    print(f"Error: {reason}", file=sys.stderr)
+    tqdm.write(f"Error: {reason}", file=sys.stderr)
     for detail in details or ():
-        print(f"- {detail}", file=sys.stderr)
+        tqdm.write(f"- {detail}", file=sys.stderr)
     return exit_code
+
+
+def confirm_overwrite(path: Path) -> bool:
+    """Ask before replacing subtitles; Enter means yes and EOF skips the file."""
+    tqdm.write(f"File exists: {path}", file=sys.stderr)
+    while True:
+        tqdm.write("Overwrite? (Y/n)", file=sys.stderr, end=" ")
+        sys.stderr.flush()
+        try:
+            answer = input().strip().casefold()
+        except EOFError:
+            tqdm.write("", file=sys.stderr)
+            return False
+        if answer in {"", "y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        tqdm.write("Please answer y or n.", file=sys.stderr)
+
+
+def open_subtitle_output(path: Path, *, assume_yes: bool) -> TextIO | None:
+    """Create new output, or stage an approved overwrite beside the original."""
+    try:
+        return path.open("x", encoding="utf-8", newline="\n")
+    except FileExistsError:
+        if not assume_yes and not confirm_overwrite(path):
+            return None
+        return tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="\n", delete=False,
+            dir=path.parent, prefix=".transcribe-", suffix=".srt.tmp",
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,12 +84,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="local-ai-transcribe",
         description="Transcribe local audio/video files to .srt subtitles beside each input using OpenVINO Whisper.",
     )
-    parser.add_argument("input_paths", type=Path, nargs="*", help="Local media files, processed in order.")
+    parser.add_argument("input_paths", type=Path, nargs="*", help="Local media files, or directories when --recursive is set.")
+    parser.add_argument("-R", "--recursive", action="store_true", help="Find eligible audio/video files recursively within input directories.")
+    parser.add_argument("-y", "--yes", action="store_true", help="Answer yes to all prompts, including overwriting existing subtitles.")
     parser.add_argument("--device", default="NPU,GPU,CPU", help="Device preference order, or 'list' (default: NPU,GPU,CPU).")
     parser.add_argument("--model", help="OpenVINO model directory or Hugging Face org/repo; otherwise download the device default.")
     parser.add_argument("--offline", action="store_true", help="Use local/cached models only; never download.")
     parser.add_argument("--language", help="Whisper language token, e.g. <|en|>.")
-    parser.add_argument("--task", choices=["transcribe", "translate"], help="Whisper task.")
     parser.add_argument("--timestamps", action="store_true", default=True, help=argparse.SUPPRESS)
     parser.add_argument("--chunk-seconds", type=float, default=30.0, help="Audio window in seconds, greater than 0 and at most 30 (default: 30).")
     silence = parser.add_mutually_exclusive_group()
@@ -64,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vad-min-speech-ratio", type=float, default=VAD_MIN_SPEECH_RATIO)
     parser.add_argument("--vad-min-utterance-ms", type=int, default=VAD_MIN_UTTERANCE_MS)
     parser.add_argument("--vad-hangover-ms", type=int, default=VAD_HANGOVER_MS)
-    parser.add_argument("--output-dir", type=Path, help="Override the default input directory for .srt files; never overwrite.")
+    parser.add_argument("--output-dir", type=Path, help="Override the default input directory for .srt files.")
     parser.add_argument("--profile", action="store_true", help="Record this run using optional py-spy.")
     parser.add_argument("--profile-output", type=Path, help="Profiling SVG path (default: profiles/<timestamp>.svg).")
     parser.add_argument("--verbose", action="store_true", help="Print progress to stderr.")
@@ -82,6 +120,7 @@ def run_files(args: argparse.Namespace) -> int:
             logger=log,
             verbose=args.verbose,
             start_time=start,
+            preparation_progress=model_preparation_progress,
         )
     except DeviceListRequested as exc:
         if not exc.devices:
@@ -103,7 +142,7 @@ def run_files(args: argparse.Namespace) -> int:
             return fail("Cannot create output directory.", [str(exc)], 2)
 
     status = 0
-    for path in args.input_paths:
+    for index, path in enumerate(args.input_paths, 1):
         if not path.is_file():
             fail(f"Input file not found or not a regular file: {path}", exit_code=2)
             status = status or 2
@@ -126,33 +165,54 @@ def run_files(args: argparse.Namespace) -> int:
             return fail("Audio preprocessing failed.", [str(exc)], 6)
         created = False
         completed = False
+        working_path = output_path
         try:
-            with output_path.open("x", encoding="utf-8", newline="\n") as output:
-                created = True
+            output = open_subtitle_output(output_path, assume_yes=args.yes)
+            if output is None:
+                tqdm.write(f"Skipped: {path}", file=sys.stderr)
+                continue
+            working_path = Path(output.name)
+            created = True
+            with output:
                 writer = SrtWriter(output)
-                response = execute_transcribe_file(
-                    request=TranscribeFileRequest(input_path=path, verbose=args.verbose, chunk_seconds=args.chunk_seconds),
-                    pipe=runtime.pipe,
-                    audio_preprocessor=preprocessor,
-                    generate_kwargs=runtime.generate_kwargs,
-                    start=start,
-                    logger=log,
-                    runtime_error_details=likely_reason_details,
-                    on_cue=writer.write,
-                )
+                tqdm.write(f"Transcribing: {path}", file=sys.stderr)
+                with tqdm(
+                    desc=f"{index}/{len(args.input_paths)} {path.name}",
+                    unit="s", unit_scale=True, dynamic_ncols=True,
+                    file=sys.stderr, disable=None,
+                ) as progress:
+                    def update_progress(seconds: float, total: float | None) -> None:
+                        """Advance only after decoded audio reaches the reported position."""
+                        if total is not None:
+                            progress.total = max(total, seconds)
+                        progress.update(max(0.0, seconds - progress.n))
+
+                    response = execute_transcribe_file(
+                        request=TranscribeFileRequest(input_path=path, verbose=args.verbose, chunk_seconds=args.chunk_seconds),
+                        pipe=runtime.pipe,
+                        audio_preprocessor=preprocessor,
+                        generate_kwargs=runtime.generate_kwargs,
+                        start=start,
+                        logger=log,
+                        runtime_error_details=likely_reason_details,
+                        on_cue=writer.write,
+                        on_progress=update_progress,
+                    )
                 if response.exit_code:
                     fail(f"{path}: {response.reason}", response.details, response.exit_code)
                     status = status or response.exit_code
-            completed = response.exit_code == 0
-            if completed:
-                print(f"Saved subtitles: {output_path} ({writer.count} cues)", file=sys.stderr)
+            if response.exit_code == 0:
+                if working_path != output_path:
+                    working_path.replace(output_path)
+                completed = True
+                tqdm.write(f"Saved subtitles: {output_path} ({writer.count} cues)", file=sys.stderr)
         except OSError as exc:
             fail(f"Cannot write subtitles: {output_path}", [str(exc)], 2)
             status = status or 2
         finally:
             if created and not completed:
                 try:
-                    output_path.unlink(missing_ok=True)
+                    working_path.unlink(missing_ok=True)
                 except OSError as exc:
                     fail(f"Cannot remove incomplete subtitles: {output_path}", [str(exc)], 2)
                     status = status or 2
@@ -168,6 +228,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("provide one or more input files, or use --device list")
     if not math.isfinite(args.chunk_seconds) or not 0 < args.chunk_seconds <= 30:
         parser.error("--chunk-seconds must be greater than 0 and at most 30")
+    if args.recursive and args.input_paths:
+        try:
+            args.input_paths = discover_media_files(args.input_paths)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        if not args.input_paths:
+            parser.error("no eligible audio or video files found in the input directories")
     profile = start_py_spy_profile(enabled=args.profile, label="local-ai-transcribe", output_path=args.profile_output)
     try:
         return run_files(args)

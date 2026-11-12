@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import pathlib
 import sys
+from types import SimpleNamespace
 
+from local_ai.infrastructure.openvino import runtime_env
 from local_ai.infrastructure.openvino.runtime_env import configure_openvino_runtime_env
 
 
@@ -44,3 +46,30 @@ def test_configure_openvino_runtime_env_prepends_existing_paths(tmp_path: pathli
     assert str(exe_libs) in path_parts
     assert path_parts[-1] == "existing-path"
     assert lib_parts[-1] == "existing-lib-path"
+
+
+def test_windows_cache_uses_local_appdata_and_separates_devices(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_env, "sys", SimpleNamespace(platform="win32", frozen=True))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    base = tmp_path / "local-ai-transcribe" / "cache" / "openvino"
+    assert runtime_env.compiled_model_cache_dir("CPU") == base / "CPU"
+    assert runtime_env.compiled_model_cache_dir("GPU") == base / "GPU"
+    assert runtime_env.compiled_model_cache_dir("NPU") == base / "NPU"
+
+
+def test_linux_cache_uses_xdg_cache_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_env, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    assert runtime_env.compiled_model_cache_dir("CPU") == tmp_path / "local-ai-transcribe" / "openvino" / "CPU"
+
+
+def test_cache_location_falls_back_to_user_home(monkeypatch, tmp_path):
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(runtime_env, "sys", SimpleNamespace(platform="win32"))
+    assert runtime_env.compiled_model_cache_dir("CPU") == (
+        tmp_path / "AppData" / "Local" / "local-ai-transcribe" / "cache" / "openvino" / "CPU"
+    )
+    monkeypatch.setattr(runtime_env, "sys", SimpleNamespace(platform="linux"))
+    assert runtime_env.compiled_model_cache_dir("CPU") == tmp_path / ".cache" / "local-ai-transcribe" / "openvino" / "CPU"

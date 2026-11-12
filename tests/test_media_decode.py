@@ -5,7 +5,7 @@ import pathlib
 import numpy as np
 import pytest
 
-from local_ai.slices.voice.shared.media_decode import decode_audio_frame, iter_media_chunks
+from local_ai.slices.voice.shared.media_decode import decode_audio_frame, iter_media_chunks, media_duration_seconds
 
 
 class FakeFrame:
@@ -174,3 +174,29 @@ def test_invalid_sample_rate_closes_container():
     with pytest.raises(ValueError, match="sample rate"):
         list(iter_media_chunks(pathlib.Path("media.mp4"), open_container=lambda path: container))
     assert container.closed
+
+
+def test_duration_uses_audio_end_with_video_offset():
+    from fractions import Fraction
+    from types import SimpleNamespace
+
+    audio = SimpleNamespace(duration=480000, start_time=96000, time_base=Fraction(1, 48000))
+    container = SimpleNamespace(start_time=1_000_000, duration=50_000_000, streams=SimpleNamespace(audio=[audio]))
+    assert media_duration_seconds(container) == 11
+
+
+def test_duration_falls_back_to_container_or_unknown():
+    from types import SimpleNamespace
+
+    assert media_duration_seconds(SimpleNamespace(duration=12_500_000)) == 12.5
+    assert media_duration_seconds(SimpleNamespace(duration=None)) is None
+    assert media_duration_seconds(SimpleNamespace(duration=0)) is None
+    assert media_duration_seconds(SimpleNamespace(duration=float("inf"))) is None
+
+
+def test_decoder_attaches_duration_without_reading_ahead():
+    frames = [FakeFrame(np.ones(8, dtype=np.float32), 4)]
+    container = ChunkContainer(frames)
+    container.duration = 2_000_000
+    chunks = list(iter_media_chunks(pathlib.Path("media.mp4"), chunk_seconds=1, open_container=lambda path: container))
+    assert [chunk.total_seconds for chunk in chunks] == [2, 2]

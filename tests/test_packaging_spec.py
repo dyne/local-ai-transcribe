@@ -31,6 +31,7 @@ def test_spec_collects_only_transcription_runtime(monkeypatch):
         assert ("binary", package) in collected
     assert "webrtcvad" in analyses[0][1]["hiddenimports"]
     assert "hf_xet" in analyses[0][1]["hiddenimports"]
+    assert "tqdm" in analyses[0][1]["hiddenimports"]
     assert analyses[0][1]["datas"] == []
     assert "fastapi" in analyses[0][1]["excludes"]
     assert "torch" in analyses[0][1]["excludes"]
@@ -45,7 +46,7 @@ def test_release_and_make_use_shared_spec_without_web_dependencies():
     for text in (workflow, makefile):
         for removed in ("uvicorn", "faiss", "pywebview", "sounddevice", "frontend", "npm"):
             assert removed not in text
-        for required in ("av", "noisereduce", "webrtcvad-wheels", "hf_xet", "openvino-genai", "openvino-tokenizers"):
+        for required in ("av", "tqdm", "noisereduce", "webrtcvad-wheels", "hf_xet", "openvino-genai", "openvino-tokenizers"):
             assert required in text
 
 

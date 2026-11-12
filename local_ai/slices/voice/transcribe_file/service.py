@@ -21,6 +21,7 @@ def execute_transcribe_file(
     logger: Callable[[str, bool, float | None], None],
     runtime_error_details: Callable[[Exception], list[str]],
     on_cue: Callable[[SubtitleCue], None],
+    on_progress: Callable[[float, float | None], None] | None = None,
 ) -> TranscribeFileResponse:
     """Stream audio windows through Whisper and emit timestamped subtitle cues."""
     if not request.input_path.is_file():
@@ -30,6 +31,8 @@ def execute_transcribe_file(
     try:
         with closing(iter_media_chunks(request.input_path, chunk_seconds=request.chunk_seconds)) as chunks:
             for chunk in chunks:
+                if on_progress is not None:
+                    on_progress(max(0.0, chunk.start_seconds), chunk.total_seconds)
                 logger(f"Processing {request.input_path} at {chunk.start_seconds:.2f}s", request.verbose, start)
                 reason, code = "Audio preprocessing failed.", 6
                 audio = preprocess_audio(chunk.audio, chunk.sample_rate, audio_preprocessor, request.verbose, start, logger)
@@ -37,7 +40,7 @@ def execute_transcribe_file(
                     reason, code = "Audio resampling failed.", 6
                     audio, _ = ensure_sample_rate(audio, chunk.sample_rate, request.verbose, start, logger)
                     reason, code = "Transcription failed.", 5
-                    result = pipe.generate(audio.tolist(), **{**generate_kwargs, "return_timestamps": True})
+                    result = pipe.generate(audio.tolist(), **{**generate_kwargs, "task": "transcribe", "return_timestamps": True})
                     if not should_suppress_transcript(result_to_text(result).strip(), audio_preprocessor):
                         cues = result_to_cues(
                             result,
@@ -48,6 +51,8 @@ def execute_transcribe_file(
                         for cue in cues:
                             on_cue(cue)
                             emitted = True
+                if on_progress is not None:
+                    on_progress(max(0.0, chunk.start_seconds + chunk.audio.size / chunk.sample_rate), chunk.total_seconds)
                 reason, code = "Audio decode failed.", 2
     except Exception as exc:
         details = runtime_error_details(exc) if code == 5 else [str(exc)]

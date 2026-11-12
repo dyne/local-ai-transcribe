@@ -67,7 +67,7 @@ jobs:
       - name: Install build and test dependencies
         run: >-
           python -m pip install pytest pyinstaller numpy noisereduce
-          webrtcvad-wheels av "huggingface_hub[hf_xet]" hf_xet
+          webrtcvad-wheels av tqdm "huggingface_hub[hf_xet]" hf_xet
           openvino openvino-genai openvino-tokenizers
       - name: Test
         run: python -m pytest

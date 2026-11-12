@@ -5,6 +5,15 @@ import pathlib
 import sys
 
 
+def compiled_model_cache_dir(device: str) -> pathlib.Path:
+    """Locate a persistent per-device cache outside models and frozen bundles."""
+    if sys.platform == "win32":
+        root = pathlib.Path(os.environ.get("LOCALAPPDATA") or pathlib.Path.home() / "AppData" / "Local")
+        return root / "local-ai-transcribe" / "cache" / "openvino" / device
+    root = pathlib.Path(os.environ.get("XDG_CACHE_HOME") or pathlib.Path.home() / ".cache")
+    return root / "local-ai-transcribe" / "openvino" / device
+
+
 def configure_openvino_runtime_env() -> None:
     candidates: list[pathlib.Path] = []
     if getattr(sys, "frozen", False):

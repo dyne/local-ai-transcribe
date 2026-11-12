@@ -43,6 +43,50 @@ def test_resolve_model_artifact_prefers_bundled_default(tmp_path: pathlib.Path) 
     assert artifact == ModelArtifact(path=bundled, source="bundled", repo_id="OpenVINO/whisper-tiny-fp16-ov")
 
 
+def test_npu_default_uses_large_v3_turbo_local_directory(tmp_path: pathlib.Path) -> None:
+    create_openvino_model_dir(tmp_path / "whisper-base.en-int8-ov")
+    bundled = create_openvino_model_dir(tmp_path / "whisper-large-v3-turbo-int8-ov")
+    artifact = resolve_model_artifact(model_arg=None, selected_device="NPU", base_dir=tmp_path, offline=True)
+    assert artifact == ModelArtifact(path=bundled, source="bundled", repo_id="OpenVINO/whisper-large-v3-turbo-int8-ov")
+
+
+def test_npu_default_reuses_large_v3_turbo_cache(monkeypatch, tmp_path: pathlib.Path) -> None:
+    cached = create_openvino_model_dir(tmp_path / "cached")
+    requested = []
+
+    def resolve_cache(repo_id, token):
+        requested.append(repo_id)
+        return cached
+
+    monkeypatch.setattr("local_ai.shared.domain.models.resolve_cached_openvino_model", resolve_cache)
+    artifact = resolve_model_artifact(model_arg=None, selected_device="NPU", base_dir=tmp_path, offline=True)
+    assert artifact.path == cached
+    assert requested == ["OpenVINO/whisper-large-v3-turbo-int8-ov"]
+
+
+def test_npu_default_downloads_large_v3_turbo_when_missing(monkeypatch, tmp_path: pathlib.Path) -> None:
+    requested = []
+    monkeypatch.setattr("local_ai.shared.domain.models.resolve_cached_openvino_model", lambda *args: None)
+
+    def download(repo_id):
+        requested.append(repo_id)
+        return ModelArtifact(path=tmp_path / "downloaded", source="download", repo_id=repo_id)
+
+    monkeypatch.setattr("local_ai.shared.domain.models.download_openvino_model", download)
+    artifact = resolve_model_artifact(model_arg=None, selected_device="NPU", base_dir=tmp_path)
+    assert artifact.repo_id == "OpenVINO/whisper-large-v3-turbo-int8-ov"
+    assert requested == [artifact.repo_id]
+
+
+def test_npu_offline_does_not_fall_back_to_old_default(monkeypatch, tmp_path: pathlib.Path) -> None:
+    create_openvino_model_dir(tmp_path / "whisper-base.en-int8-ov")
+    monkeypatch.setattr("local_ai.shared.domain.models.resolve_cached_openvino_model", lambda *args: None)
+    with pytest.raises(PipelineSetupError) as error:
+        resolve_model_artifact(model_arg=None, selected_device="NPU", base_dir=tmp_path, offline=True)
+    assert "offline" in error.value.reason
+    assert any("OpenVINO/whisper-large-v3-turbo-int8-ov" in detail for detail in error.value.details)
+
+
 def test_resolve_model_artifact_accepts_explicit_local_dir(tmp_path: pathlib.Path) -> None:
     model_dir = create_openvino_model_dir(tmp_path / "custom-model")
 
