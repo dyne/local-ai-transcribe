@@ -1,2 +1,0 @@
-"""Uploaded media transcription slice."""
-

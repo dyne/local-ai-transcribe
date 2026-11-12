@@ -26,7 +26,7 @@ def test_configure_openvino_runtime_env_prepends_existing_paths(tmp_path: pathli
     libs.mkdir(parents=True)
     tokenizers.mkdir(parents=True)
     exe_libs.mkdir(parents=True)
-    fake_exe = exe_dir / "local-ai-voice.exe"
+    fake_exe = exe_dir / "local-ai-transcribe.exe"
     fake_exe.write_text("x", encoding="utf-8")
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)

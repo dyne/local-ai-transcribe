@@ -2,137 +2,38 @@ SHELL := /bin/sh
 ifeq ($(OS),Windows_NT)
 HOST_PYTHON ?= py -3.11
 VENV_PYTHON := .venv/Scripts/python.exe
-DATA_SEP := ;
 else
-PY311 := $(shell command -v python3.11 2>/dev/null)
-ifneq ($(PY311),)
 HOST_PYTHON ?= python3.11
 VENV_PYTHON := .venv/bin/python
-DATA_SEP := :
-else
-HOST_PYTHON ?= python3
-VENV_PYTHON := .venv/bin/python
-DATA_SEP := :
-endif
 endif
 PYTHON ?= $(VENV_PYTHON)
 PIP := $(PYTHON) -m pip
-
-SCRIPT := local-ai-voice.py
-APP_NAME := local-ai-voice
+APP_NAME := local-ai-transcribe
+SCRIPT := $(APP_NAME).py
 SPEC := $(APP_NAME).spec
-REQUIREMENTS := numpy faiss-cpu noisereduce webrtcvad-wheels sounddevice fastapi uvicorn websockets pydantic av pywebview huggingface_hub[hf_xet]
+REQUIREMENTS := numpy noisereduce webrtcvad-wheels av huggingface_hub[hf_xet] hf_xet
 OPENVINO_PACKAGES := openvino openvino-genai openvino-tokenizers
-NPM ?= npm
-FRONTEND_DIR := frontend
-RUN_PREFIX :=
-ifeq ($(OS),Windows_NT)
-RUN_PREFIX :=
-else
-RUN_PREFIX := exec
-endif
 
-.PHONY: all install install-build frontend-install frontend-dev-install frontend-test frontend-build spec build build-webrtc run run-web run-server dev test clean
-
+.PHONY: all install install-build test build run clean
 all: install
 
 $(VENV_PYTHON):
 	$(HOST_PYTHON) -m venv .venv
 
 install: $(VENV_PYTHON)
-	$(PIP) install --upgrade pip
-	$(PIP) install $(REQUIREMENTS)
-	$(PIP) install --upgrade $(OPENVINO_PACKAGES)
+	$(PIP) install $(REQUIREMENTS) $(OPENVINO_PACKAGES)
 
 install-build: $(VENV_PYTHON)
 	$(PIP) install pyinstaller
 
-frontend-install:
-	$(NPM) --prefix $(FRONTEND_DIR) ci
-
-frontend-dev-install:
-ifeq ($(OS),Windows_NT)
-	@if not exist "$(FRONTEND_DIR)\node_modules" $(NPM) --prefix $(FRONTEND_DIR) ci
-else
-	@if [ ! -d "$(FRONTEND_DIR)/node_modules" ]; then \
-		$(NPM) --prefix $(FRONTEND_DIR) ci; \
-	fi
-endif
-
-frontend-build: frontend-install
-	$(NPM) --prefix $(FRONTEND_DIR) run build
-
-frontend-test: frontend-install
-	$(NPM) --prefix $(FRONTEND_DIR) test
-
-spec: install-build frontend-build
-	$(PYTHON) -m PyInstaller.utils.cliutils.makespec --onefile --name $(APP_NAME) \
-		--hidden-import browser_webrtc \
-		--hidden-import av \
-		--hidden-import noisereduce \
-		--hidden-import webrtcvad \
-		--hidden-import uvicorn \
-		--hidden-import webview \
-		--hidden-import hf_xet \
-		--hidden-import faiss \
-		--collect-submodules uvicorn \
-		--collect-submodules websockets \
-		--additional-hooks-dir hooks \
-		--collect-binaries openvino \
-		--collect-data openvino \
-		--collect-binaries openvino_genai \
-		--collect-data openvino_genai \
-		--collect-binaries openvino_tokenizers \
-		--collect-data openvino_tokenizers \
-		--collect-data webview \
-		--collect-binaries hf_xet \
-		--collect-data hf_xet \
-		--collect-binaries faiss \
-		--collect-data faiss \
-		--add-data "$(FRONTEND_DIR)/dist$(DATA_SEP)$(FRONTEND_DIR)/dist" \
-		--add-data "web/index.html$(DATA_SEP)web" \
-		$(SCRIPT)
-
-build: install spec
-	$(PYTHON) -m PyInstaller --clean $(SPEC)
-
-build-webrtc: build
-
-run:
-	$(RUN_PREFIX) $(PYTHON) $(SCRIPT)
-
-run-web:
-	$(RUN_PREFIX) $(PYTHON) $(SCRIPT) --web
-
-run-server:
-	$(RUN_PREFIX) $(PYTHON) $(SCRIPT) --server
-
-dev: frontend-dev-install
-ifeq ($(OS),Windows_NT)
-	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Python "$(PYTHON)" -Script "$(SCRIPT)" -Npm "$(NPM)" -FrontendDir "$(FRONTEND_DIR)" -Port 8000
-else
-	@echo "Starting backend API server and frontend HMR server..."
-	@$(PYTHON) $(SCRIPT) --server & \
-	BACKEND_PID=$$!; \
-	trap 'kill $$BACKEND_PID 2>/dev/null' EXIT INT TERM; \
-	i=0; \
-	until $(PYTHON) -c "import socket; s=socket.create_connection(('127.0.0.1', 8000), 0.25); s.close()" 2>/dev/null; do \
-		i=$$((i + 1)); \
-		if [ $$i -ge 480 ]; then \
-			echo "Backend did not start on 127.0.0.1:8000 within 120s" >&2; \
-			exit 1; \
-		fi; \
-		sleep 0.25; \
-	done; \
-	$(RUN_PREFIX) $(NPM) --prefix $(FRONTEND_DIR) run dev
-endif
-
-test: frontend-test
+test:
 	$(PYTHON) -m pytest
 
+build: install install-build
+	$(PYTHON) -m PyInstaller --clean $(SPEC)
+
+run:
+	$(PYTHON) $(SCRIPT) $(ARGS)
+
 clean:
-ifeq ($(OS),Windows_NT)
-	-powershell -NoProfile -Command "Remove-Item -Recurse -Force build,dist,__pycache__ -ErrorAction SilentlyContinue; Remove-Item -Force *.spec -ErrorAction SilentlyContinue"
-else
-	$(RM) -r build dist __pycache__ *.spec
-endif
+	$(PYTHON) -c "import shutil; shutil.rmtree('build', ignore_errors=True); shutil.rmtree('dist', ignore_errors=True)"

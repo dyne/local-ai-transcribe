@@ -162,3 +162,45 @@ def test_resolve_model_artifact_fails_for_missing_local_path(tmp_path: pathlib.P
             base_dir=tmp_path,
             offline=False,
         )
+
+
+def test_download_uses_cache_without_network(monkeypatch, tmp_path):
+    from local_ai.shared.domain import models
+    import huggingface_hub
+
+    cached = create_openvino_model_dir(tmp_path / "cached")
+    monkeypatch.setattr(models, "resolve_cached_openvino_model", lambda *args: cached)
+
+    def unexpected_download(**kwargs):
+        raise AssertionError("Cache hit must not download")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", unexpected_download)
+    assert models.download_openvino_model("OpenVINO/whisper-tiny-fp16-ov").path == cached
+
+
+def test_download_validates_snapshot_and_passes_hf_token(monkeypatch, tmp_path):
+    from local_ai.shared.domain import models
+    import huggingface_hub
+
+    downloaded = create_openvino_model_dir(tmp_path / "downloaded")
+    calls = []
+    monkeypatch.setenv("HF_TOKEN", "test-token")
+    monkeypatch.setattr(models, "resolve_cached_openvino_model", lambda *args: None)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda **kwargs: calls.append(kwargs) or str(downloaded))
+    artifact = models.download_openvino_model("OpenVINO/whisper-tiny-fp16-ov")
+    assert artifact.path == downloaded
+    assert artifact.source == "download"
+    assert calls == [{"repo_id": "OpenVINO/whisper-tiny-fp16-ov", "token": "test-token"}]
+
+
+def test_offline_model_resolution_never_invokes_download(monkeypatch, tmp_path):
+    from local_ai.shared.domain import models
+
+    monkeypatch.setattr(models, "resolve_cached_openvino_model", lambda *args: None)
+
+    def unexpected_download(repo_id):
+        raise AssertionError("Offline mode must not download")
+
+    monkeypatch.setattr(models, "download_openvino_model", unexpected_download)
+    with pytest.raises(PipelineSetupError):
+        models.resolve_model_artifact(model_arg=None, selected_device="CPU", base_dir=tmp_path, offline=True)

@@ -1,9 +1,15 @@
 *.spec
-dist
-captures
+!local-ai-transcribe.spec
+dist/
+build/
 .venv/
 __pycache__/
 **/__pycache__/
 *.pyc
+.pytest_cache/
+.cache/
+profiles/
+# Generated artifacts left by earlier UI builds.
 frontend/node_modules/
 frontend/dist/
+captures/

@@ -8,3 +8,4 @@ from dataclasses import dataclass
 class TranscribeFileRequest:
     input_path: pathlib.Path
     verbose: bool = False
+    chunk_seconds: float = 30.0

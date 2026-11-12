@@ -1,1 +1,1 @@
-"""Shared package for reusable Local AI architecture modules."""
+"""Local AI Transcribe: on-device Whisper subtitles for local media files."""
