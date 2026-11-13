@@ -63,3 +63,4 @@ def test_release_versions_main_and_publishes_only_after_both_builds():
     assert "fail_on_unmatched_files: true" in workflow
     assert "release-assets/local-ai-transcribe-windows-x64.zip" in workflow
     assert "release-assets/local-ai-transcribe-linux-x64.tar.gz" in workflow
+    assert "Copy-Item srt2txt.py $stage" in workflow

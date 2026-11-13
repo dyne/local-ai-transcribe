@@ -39,9 +39,13 @@ out of scope. Do not restore these dependencies for file transcription.
 - Print selected device and resolved model path to stderr.
 - Load one runtime per batch, reset preprocessing per file, continue after file
   errors, and return nonzero if any file fails.
-- Write UTF-8 SubRip subtitles beside each input, replacing its extension with
-  `.srt`. `--output-dir` is an optional location override. Ask `Overwrite? (Y/n)`
-  before replacing existing subtitles; Enter means yes, No skips without error.
+- Model preparation uses an indeterminate spinner, not a percentage. Its helper
+  process only renders terminal activity; compilation and inference stay in the
+  main process. Keep freeze_support() before CLI imports in the frozen entrypoint.
+- Write UTF-8 output beside each input: `--format srt` (default) produces `.srt`
+  subtitles; `--format txt` produces plain `.txt` speech segments without timestamps.
+  `--output-dir` is an optional location override. Ask `Overwrite? (Y/n)`
+  before replacing existing output; Enter means yes, No skips without error.
   `-y` / `--yes` bypasses prompts. Preserve the original until replacement succeeds.
 - Decode only the first audio stream in bounded windows of at most 30 seconds.
   Do not accumulate complete audio or subtitle history in memory.
@@ -50,6 +54,7 @@ out of scope. Do not restore these dependencies for file transcription.
 - Remove incomplete subtitles on failure or interruption. Diagnostics go to stderr.
 - Render terminal progress with tqdm on stderr, disabled for redirected output;
   keep progress callbacks independent of terminal presentation in the service.
+- Keep srt2txt.py standalone and standard-library-only; include it in release archives.
 
 ## Validation and packaging
 

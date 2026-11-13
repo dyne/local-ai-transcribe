@@ -28,7 +28,7 @@ from local_ai.slices.voice.shared.transcript_policy import setup_error_exit_code
 from local_ai.slices.voice.transcribe_file.request import TranscribeFileRequest
 from local_ai.slices.voice.transcribe_file.service import execute_transcribe_file
 from local_ai.slices.voice.transcribe_file.discovery import discover_media_files
-from local_ai.slices.voice.transcribe_file.subtitles import SrtWriter
+from local_ai.slices.voice.transcribe_file.subtitles import SrtWriter, TxtWriter
 from pyspy_profile import start_py_spy_profile, stop_py_spy_profile
 
 
@@ -48,7 +48,7 @@ def fail(reason: str, details: list[str] | None = None, exit_code: int = 1) -> i
 
 
 def confirm_overwrite(path: Path) -> bool:
-    """Ask before replacing subtitles; Enter means yes and EOF skips the file."""
+    """Ask before replacing output; Enter means yes and EOF skips the file."""
     tqdm.write(f"File exists: {path}", file=sys.stderr)
     while True:
         tqdm.write("Overwrite? (Y/n)", file=sys.stderr, end=" ")
@@ -65,7 +65,7 @@ def confirm_overwrite(path: Path) -> bool:
         tqdm.write("Please answer y or n.", file=sys.stderr)
 
 
-def open_subtitle_output(path: Path, *, assume_yes: bool) -> TextIO | None:
+def open_transcription_output(path: Path, *, assume_yes: bool) -> TextIO | None:
     """Create new output, or stage an approved overwrite beside the original."""
     try:
         return path.open("x", encoding="utf-8", newline="\n")
@@ -74,7 +74,7 @@ def open_subtitle_output(path: Path, *, assume_yes: bool) -> TextIO | None:
             return None
         return tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", newline="\n", delete=False,
-            dir=path.parent, prefix=".transcribe-", suffix=".srt.tmp",
+            dir=path.parent, prefix=".transcribe-", suffix=f"{path.suffix}.tmp",
         )
 
 
@@ -82,11 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
     """Describe file inputs and the shared OpenVINO Whisper options."""
     parser = argparse.ArgumentParser(
         prog="local-ai-transcribe",
-        description="Transcribe local audio/video files to .srt subtitles beside each input using OpenVINO Whisper.",
+        description="Transcribe local audio/video files to SRT subtitles or plain text beside each input using OpenVINO Whisper.",
     )
     parser.add_argument("input_paths", type=Path, nargs="*", help="Local media files, or directories when --recursive is set.")
     parser.add_argument("-R", "--recursive", action="store_true", help="Find eligible audio/video files recursively within input directories.")
-    parser.add_argument("-y", "--yes", action="store_true", help="Answer yes to all prompts, including overwriting existing subtitles.")
+    parser.add_argument("-y", "--yes", action="store_true", help="Answer yes to all prompts, including overwriting existing output files.")
+    parser.add_argument("--format", dest="output_format", choices=["srt", "txt"], default="srt", help="Output format (default: srt).")
     parser.add_argument("--device", default="NPU,GPU,CPU", help="Device preference order, or 'list' (default: NPU,GPU,CPU).")
     parser.add_argument("--model", help="OpenVINO model directory or Hugging Face org/repo; otherwise download the device default.")
     parser.add_argument("--offline", action="store_true", help="Use local/cached models only; never download.")
@@ -102,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vad-min-speech-ratio", type=float, default=VAD_MIN_SPEECH_RATIO)
     parser.add_argument("--vad-min-utterance-ms", type=int, default=VAD_MIN_UTTERANCE_MS)
     parser.add_argument("--vad-hangover-ms", type=int, default=VAD_HANGOVER_MS)
-    parser.add_argument("--output-dir", type=Path, help="Override the default input directory for .srt files.")
+    parser.add_argument("--output-dir", type=Path, help="Override the default directory for output files.")
     parser.add_argument("--profile", action="store_true", help="Record this run using optional py-spy.")
     parser.add_argument("--profile-output", type=Path, help="Profiling SVG path (default: profiles/<timestamp>.svg).")
     parser.add_argument("--verbose", action="store_true", help="Print progress to stderr.")
@@ -147,9 +148,9 @@ def run_files(args: argparse.Namespace) -> int:
             fail(f"Input file not found or not a regular file: {path}", exit_code=2)
             status = status or 2
             continue
-        output_path = (args.output_dir / path.name if args.output_dir else path).with_suffix(".srt")
+        output_path = (args.output_dir / path.name if args.output_dir else path).with_suffix(f".{args.output_format}")
         if output_path.resolve() == path.resolve():
-            fail(f"Subtitle output would replace input: {path}", exit_code=2)
+            fail(f"Output would replace input: {path}", exit_code=2)
             status = status or 2
             continue
         try:
@@ -167,14 +168,14 @@ def run_files(args: argparse.Namespace) -> int:
         completed = False
         working_path = output_path
         try:
-            output = open_subtitle_output(output_path, assume_yes=args.yes)
+            output = open_transcription_output(output_path, assume_yes=args.yes)
             if output is None:
                 tqdm.write(f"Skipped: {path}", file=sys.stderr)
                 continue
             working_path = Path(output.name)
             created = True
             with output:
-                writer = SrtWriter(output)
+                writer = SrtWriter(output) if args.output_format == "srt" else TxtWriter(output)
                 tqdm.write(f"Transcribing: {path}", file=sys.stderr)
                 with tqdm(
                     desc=f"{index}/{len(args.input_paths)} {path.name}",
@@ -205,16 +206,19 @@ def run_files(args: argparse.Namespace) -> int:
                 if working_path != output_path:
                     working_path.replace(output_path)
                 completed = True
-                tqdm.write(f"Saved subtitles: {output_path} ({writer.count} cues)", file=sys.stderr)
+                if args.output_format == "srt":
+                    tqdm.write(f"Saved subtitles: {output_path} ({writer.count} cues)", file=sys.stderr)
+                else:
+                    tqdm.write(f"Saved text: {output_path} ({writer.count} segments)", file=sys.stderr)
         except OSError as exc:
-            fail(f"Cannot write subtitles: {output_path}", [str(exc)], 2)
+            fail(f"Cannot write output: {output_path}", [str(exc)], 2)
             status = status or 2
         finally:
             if created and not completed:
                 try:
                     working_path.unlink(missing_ok=True)
                 except OSError as exc:
-                    fail(f"Cannot remove incomplete subtitles: {output_path}", [str(exc)], 2)
+                    fail(f"Cannot remove incomplete output: {output_path}", [str(exc)], 2)
                     status = status or 2
     log(f"Done in {time.perf_counter() - start:.2f}s", args.verbose, start)
     return status

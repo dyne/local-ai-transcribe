@@ -67,3 +67,19 @@ class SrtWriter:
         )
         self.output.flush()
         self.last_end_ms = end_ms
+
+
+class TxtWriter:
+    """Write each speech segment as a plain line without retaining history."""
+
+    def __init__(self, output: TextIO) -> None:
+        self.output = output
+        self.count = 0
+
+    def write(self, cue: SubtitleCue) -> None:
+        """Append normalized speech text without timestamps or cue numbers."""
+        text = " ".join(cue.text.split())
+        if text:
+            self.output.write(text + "\n")
+            self.output.flush()
+            self.count += 1

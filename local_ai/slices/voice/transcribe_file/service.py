@@ -47,7 +47,7 @@ def execute_transcribe_file(
                             offset=chunk.start_seconds,
                             duration=chunk.audio.size / chunk.sample_rate,
                         )
-                        reason, code = "Subtitle write failed.", 2
+                        reason, code = "Output write failed.", 2
                         for cue in cues:
                             on_cue(cue)
                             emitted = True

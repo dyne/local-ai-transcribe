@@ -1,40 +1,56 @@
-"""Terminal feedback while OpenVINO loads and compiles the Whisper model."""
+"""Terminal activity feedback while OpenVINO loads and compiles Whisper."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from itertools import cycle
+import multiprocessing
 import sys
-from threading import Event, Thread
 
 from tqdm import tqdm
 
 
-def _refresh_progress(progress: tqdm, stopped: Event) -> None:
-    """Refresh elapsed time without estimating unreported compilation progress."""
-    while not stopped.wait(0.2):
-        progress.refresh()
+def _render_preparation(device: str, stopped, ready) -> None:
+    """Animate independently of native model loading holding the parent's GIL."""
+    label = f"Preparing model ({device})"
+    with tqdm(
+        total=None,
+        desc=f"{label}: |",
+        bar_format="{desc} elapsed {elapsed}",
+        file=sys.stderr,
+        disable=False,
+        dynamic_ncols=True,
+    ) as progress:
+        ready.set()
+        frames = cycle("/-\\|")
+        try:
+            while not stopped.wait(0.2):
+                progress.set_description_str(f"{label}: {next(frames)}")
+        except KeyboardInterrupt:
+            # The parent owns cancellation and stops this renderer in its finally.
+            pass
 
 
 @contextmanager
 def model_preparation_progress(device: str) -> Iterator[None]:
-    """Show preparation activity, marking completion only when loading succeeds."""
+    """Show a spinner and elapsed time, then announce readiness only on success."""
     tqdm.write(f"Preparing Whisper model on {device}...", file=sys.stderr)
-    with tqdm(
-        total=1,
-        desc=f"Preparing model ({device})",
-        bar_format="{desc}: |{bar}| elapsed {elapsed}",
-        file=sys.stderr,
-        disable=None,
-        dynamic_ncols=True,
-    ) as progress:
-        stopped = Event()
-        refresher = None
-        if not progress.disable:
-            refresher = Thread(target=_refresh_progress, args=(progress, stopped), daemon=True)
-            refresher.start()
-        try:
-            yield
-            progress.update(1)
-        finally:
+    renderer = None
+    if sys.stderr.isatty():
+        context = multiprocessing.get_context("spawn")
+        stopped = context.Event()
+        ready = context.Event()
+        renderer = context.Process(target=_render_preparation, args=(device, stopped, ready), daemon=True)
+        renderer.start()
+    try:
+        if renderer is not None:
+            ready.wait(timeout=5)
+        yield
+    finally:
+        if renderer is not None:
             stopped.set()
-            if refresher is not None:
-                refresher.join()
+            renderer.join(timeout=5)
+            if renderer.is_alive():
+                renderer.terminate()
+                renderer.join()
+            renderer.close()
+    tqdm.write(f"Model ready ({device}).", file=sys.stderr)

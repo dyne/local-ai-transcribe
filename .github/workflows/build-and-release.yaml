@@ -82,6 +82,7 @@ jobs:
           New-Item -ItemType Directory -Path $stage | Out-Null
           Copy-Item 'dist/${{ matrix.binary }}' $stage
           Copy-Item README.md $stage
+          Copy-Item srt2txt.py $stage
           Get-ChildItem -File -Filter 'LICENSE*' | Copy-Item -Destination $stage
           $asset = 'local-ai-transcribe-${{ matrix.platform }}'
           if ('${{ runner.os }}' -eq 'Windows') {

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from local_ai.slices.voice.transcribe_file.subtitles import SubtitleCue, SrtWriter, format_srt_time, result_to_cues
+from local_ai.slices.voice.transcribe_file.subtitles import SubtitleCue, SrtWriter, TxtWriter, format_srt_time, result_to_cues
 
 
 def result(segments, text="speech"):
@@ -53,3 +53,13 @@ def test_srt_rounding_numbering_and_overlap():
 
 def test_hours_do_not_wrap_at_twenty_four():
     assert format_srt_time(100 * 3600000 + 1234) == "100:00:01,234"
+
+
+def test_txt_writer_emits_only_speech_and_preserves_repetitions():
+    output = io.StringIO()
+    writer = TxtWriter(output)
+    writer.write(SubtitleCue(0, 1, "  hello\nworld "))
+    writer.write(SubtitleCue(1, 2, "hello world"))
+    writer.write(SubtitleCue(2, 3, " "))
+    assert output.getvalue() == "hello world\nhello world\n"
+    assert writer.count == 2

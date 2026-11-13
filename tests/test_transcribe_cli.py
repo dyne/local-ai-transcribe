@@ -414,9 +414,10 @@ def test_eof_at_overwrite_prompt_skips_existing_file(tmp_path, monkeypatch, runt
 
 
 @pytest.mark.parametrize("interrupted", [False, True])
-def test_failed_overwrite_preserves_original_and_cleans_temp(tmp_path, monkeypatch, runtime, interrupted):
+@pytest.mark.parametrize("output_format", ["srt", "txt"])
+def test_failed_overwrite_preserves_original_and_cleans_temp(tmp_path, monkeypatch, runtime, interrupted, output_format):
     path = media(tmp_path, "video.mp4")
-    subtitles = path.with_suffix(".srt")
+    subtitles = path.with_suffix(f".{output_format}")
     subtitles.write_text("original", encoding="utf-8")
 
     def failed(**kwargs):
@@ -426,7 +427,7 @@ def test_failed_overwrite_preserves_original_and_cleans_temp(tmp_path, monkeypat
         return TranscribeFileResponse(exit_code=5, reason="Inference failed.")
 
     monkeypatch.setattr(cli, "execute_transcribe_file", failed)
-    assert cli.main([str(path), "--yes"]) == (130 if interrupted else 5)
+    assert cli.main([str(path), "--yes", "--format", output_format]) == (130 if interrupted else 5)
     assert subtitles.read_text(encoding="utf-8") == "original"
     assert not list(tmp_path.glob("*.tmp"))
 
@@ -444,3 +445,94 @@ def test_replace_failure_preserves_original_and_cleans_temp(tmp_path, monkeypatc
     assert cli.main([str(path), "-y"]) == 2
     assert subtitles.read_text(encoding="utf-8") == "original"
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_recursive_batch_prepares_and_compiles_npu_pipeline_once(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from local_ai.infrastructure.openvino import whisper
+    from local_ai.shared.domain.devices import DeviceSelection
+    from local_ai.shared.domain.models import ModelArtifact
+
+    root = tmp_path / "media"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    paths = [media(root, "one.mp4"), media(nested, "two.wav")]
+    prepared, compiled, used = [], [], []
+    pipeline = object()
+
+    @contextmanager
+    def preparation(device):
+        prepared.append(device)
+        yield
+
+    def compile_pipeline(*args):
+        compiled.append(args)
+        return pipeline
+
+    def transcribe_file(**kwargs):
+        used.append((kwargs["request"].input_path, kwargs["pipe"]))
+        return transcribe(**kwargs)
+
+    monkeypatch.setattr(cli, "configure_openvino_runtime_env", lambda: None)
+    monkeypatch.setattr(cli, "model_preparation_progress", preparation)
+    monkeypatch.setattr(cli, "create_audio_preprocessor", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "execute_transcribe_file", transcribe_file)
+    monkeypatch.setattr(whisper, "resolve_device_selection", lambda raw: DeviceSelection(("NPU",), ["NPU"], "NPU"))
+    monkeypatch.setattr(whisper, "resolve_model_artifact", lambda **kwargs: ModelArtifact(tmp_path / "model", "local"))
+    monkeypatch.setattr(whisper, "compiled_model_cache_dir", lambda device: tmp_path / "cache" / device)
+    monkeypatch.setattr(whisper, "_create_pipeline", compile_pipeline)
+    assert cli.main(["-R", str(root), "--device", "NPU", "--offline"]) == 0
+    assert prepared == ["NPU"]
+    assert len(compiled) == 1
+    assert used == [(path, pipeline) for path in paths]
+
+
+def test_txt_format_writes_plain_text_beside_input(tmp_path, monkeypatch, runtime, capsys):
+    path = media(tmp_path, "speech.mp4")
+    subtitles = path.with_suffix(".srt")
+    subtitles.write_text("keep subtitles", encoding="utf-8")
+    monkeypatch.setattr(cli, "execute_transcribe_file", transcribe)
+    assert cli.main([str(path), "--format", "txt"]) == 0
+    assert path.with_suffix(".txt").read_text(encoding="utf-8") == "caffè\n"
+    assert subtitles.read_text(encoding="utf-8") == "keep subtitles"
+    captured = capsys.readouterr()
+    assert "Saved text:" in captured.err
+    assert captured.out == ""
+
+
+def test_recursive_txt_output_directory_and_yes_overwrite(tmp_path, monkeypatch, runtime):
+    root = tmp_path / "media"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    paths = [media(root, "one.mp4"), media(nested, "two.wav")]
+    output_dir = tmp_path / "transcripts"
+    output_dir.mkdir()
+    (output_dir / "one.txt").write_text("old transcript", encoding="utf-8")
+    monkeypatch.setattr(cli, "execute_transcribe_file", transcribe)
+    assert cli.main(["-R", str(root), "--format", "txt", "--output-dir", str(output_dir), "--yes"]) == 0
+    assert all((output_dir / path.with_suffix(".txt").name).read_text(encoding="utf-8") == "caffè\n" for path in paths)
+    assert not any(path.with_suffix(".txt").exists() for path in paths)
+    assert len(runtime[0]) == 1
+
+
+def test_existing_txt_prompts_and_can_be_skipped(tmp_path, monkeypatch, runtime, capsys):
+    path = media(tmp_path, "speech.wav")
+    target = path.with_suffix(".txt")
+    target.write_text("keep text", encoding="utf-8")
+    monkeypatch.setattr("builtins.input", lambda: "n")
+    assert cli.main([str(path), "--format", "txt"]) == 0
+    assert target.read_text(encoding="utf-8") == "keep text"
+    assert f"File exists: {target}" in capsys.readouterr().err
+
+
+def test_invalid_format_is_rejected_before_model_loading(runtime):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["video.mp4", "--format", "vtt"])
+    assert exc.value.code == 2
+    assert not runtime[0]
+
+
+def test_txt_output_cannot_replace_media_with_txt_extension(tmp_path, runtime):
+    path = media(tmp_path, "recording.txt")
+    assert cli.main([str(path), "--format", "txt", "--yes"]) == 2
+    assert path.read_bytes() == b"media"

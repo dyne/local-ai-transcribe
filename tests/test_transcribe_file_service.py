@@ -137,7 +137,7 @@ def test_subtitle_disk_error_is_reported(setup):
     kwargs["on_cue"] = disk_full
     response = service.execute_transcribe_file(**kwargs)
     assert response.exit_code == 2
-    assert response.reason == "Subtitle write failed."
+    assert response.reason == "Output write failed."
 
 
 def test_silent_file_returns_no_speech(monkeypatch, setup):

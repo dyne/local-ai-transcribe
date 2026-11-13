@@ -1,12 +1,14 @@
 # Architecture
 
 local-ai-transcribe is a file-only OpenVINO Whisper CLI that creates SubRip
-subtitles beside each local media file. It avoids an application server, UI
+subtitles or plain text beside each local media file. It avoids an application server, UI
 framework, or service container.
 
 - `local-ai-transcribe.py`: executable entry shell.
 - `local_ai/cli.py`: validation, one-runtime batch execution, exclusive output
   creation, and cleanup of incomplete subtitles.
+- `local_ai/model_preparation.py`: a display-only preparation spinner process
+  that stays responsive while native compilation holds the interpreter lock.
 - `local_ai/shared/domain/`: device selection, model artifact validation,
   Hugging Face cache/download policy, and setup errors.
 - `local_ai/infrastructure/openvino/`: runtime environment and Whisper creation.
@@ -17,10 +19,12 @@ framework, or service container.
 - `pyspy_profile.py`: optional profiling adapter.
 
 The per-file use case accepts an `on_cue` output port. The CLI supplies an SRT
-writer. The service never collects the full transcript or audio track. Existing
+or TXT writer according to `--format` (SRT by default). The service never collects
+the full transcript or audio track. Existing
 internal `voice` module names remain to avoid unnecessary renaming of the core.
 
 A batch constructs one Whisper runtime and processes input paths in order.
+Model preparation finishes before the file loop; no file recreates the pipeline.
 Recursive input directories are scanned for eligible media extensions; overlapping
 roots are deduplicated before runtime creation. Whisper always transcribes.
 Each file gets a new preprocessor so VAD/hangover state cannot leak between files.
@@ -54,7 +58,12 @@ Preserved invariants:
 - Inference audio is mono float32 at 16000 Hz.
 - Decoded audio and subtitle memory remain bounded by the processing window.
 - Default output replaces the input extension with `.srt` beside the input.
-- UTF-8 subtitle content goes to disk; diagnostics go to stderr.
+- `--format txt` writes one plain speech segment per line to a matching `.txt`.
+- UTF-8 transcription content goes to disk; diagnostics go to stderr.
+
+The standalone `srt2txt.py` utility converts existing SRT files using only the
+standard library. It removes indices, time codes, and basic styling, and joins
+wrapped caption lines. It prints to stdout or creates a new file with `-o`.
 
 The CLI uses `tqdm` for terminal progress; the transcription service reports
 timeline progress through a callback without depending on terminal presentation.

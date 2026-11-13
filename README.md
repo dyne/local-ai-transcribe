@@ -1,6 +1,6 @@
 # local-ai-transcribe
 
-Create **SRT subtitles beside your local audio/video files**, using OpenVINO
+Create **SRT subtitles or plain text beside your local audio/video files**, using OpenVINO
 GenAI Whisper on NPU, GPU, or CPU. Audio is decoded and processed on the machine.
 Network access is needed only to download a missing model; `--offline` prohibits
 downloads.
@@ -21,11 +21,12 @@ On Linux, use `python3.11 -m venv .venv` and `.venv/bin/python`.
 Alternatively, `make install` prepares the environment and runtime dependencies.
 Node.js and web-server packages are not required.
 
-## Create subtitles
+## Create subtitles or text
 
 ```powershell
 .\.venv\Scripts\python.exe .\local-ai-transcribe.py movie.mp4
 .\.venv\Scripts\python.exe .\local-ai-transcribe.py first.mp4 second.mp3 recording.wav
+.\.venv\Scripts\python.exe .\local-ai-transcribe.py movie.mp4 --format txt
 ```
 
 Outputs are written beside each input, with the same basename:
@@ -33,10 +34,13 @@ Outputs are written beside each input, with the same basename:
 ```text
 videos/movie.mp4       -> videos/movie.srt
 recordings/meeting.wav -> recordings/meeting.srt
+videos/movie.mp4       -> videos/movie.txt  (with --format txt)
 ```
 
 The input files are never changed. Subtitles use UTF-8, sequential cue numbers,
-and `HH:MM:SS,mmm` timestamps. Diagnostics and completion messages go to stderr;
+and `HH:MM:SS,mmm` timestamps. `--format srt` is the default. `--format txt` writes
+UTF-8 speech text only, one segment per line, without time codes or cue numbers.
+Diagnostics and completion messages go to stderr;
 stdout is unused. Paths containing spaces must be quoted. Supply files explicitly;
 shell glob expansion is shell-dependent. Use `-R` / `--recursive` for directories.
 
@@ -70,10 +74,10 @@ overlapping roots do not transcribe the same path twice. An unreadable directory
 or a scan with no eligible files is reported before loading a model. Direct file
 inputs remain supported without `-R`, regardless of their extension.
 
-Each discovered file gets its `.srt` beside it. With `--output-dir`, outputs use
+Each discovered file gets its selected `.srt` or `.txt` beside it. With `--output-dir`, outputs use
 that single directory; matching basenames can collide and trigger an overwrite prompt.
 
-When a subtitle file already exists, the CLI asks:
+When the selected output file already exists, the CLI asks:
 
 ```text
 File exists: videos/movie.srt
@@ -91,7 +95,7 @@ file is skipped. Use `-y` / `--yes` to answer yes to all prompts:
 Approved overwrites are generated in a temporary file beside the original and
 replace it only after transcription succeeds. A failed file does not prevent
 remaining inputs from running. Incomplete outputs are removed after failure or
-Ctrl+C; existing subtitles remain intact if replacement fails. Resuming partway
+Ctrl+C; existing output remains intact if replacement fails. Resuming partway
 through a file is not implemented.
 
 To place subtitles in a separate directory:
@@ -103,7 +107,22 @@ To place subtitles in a separate directory:
 This writes `subtitles/movie.srt`. Exit status is zero only when every input
 succeeds; otherwise it is the first file error code, or a model/setup error.
 Ctrl+C exits with status 130. Files with no detected speech return an error
-without leaving an empty `.srt`.
+without leaving an empty output file.
+
+## Convert existing subtitles to text
+
+`srt2txt.py` is a standalone Python 3 script with no external dependencies. It
+removes cue numbers, time codes, and basic SRT styling, and joins wrapped caption
+lines into one text line per cue. Numeric captions are preserved.
+
+```powershell
+py -3.11 .\srt2txt.py movie.srt
+py -3.11 .\srt2txt.py movie.srt -o movie.txt
+```
+
+Without `-o`, text is printed to stdout. With `-o`, a new UTF-8 file is created;
+existing files are not overwritten. This converter is also included in release
+archives alongside the executable.
 
 ## Large and long MP4 files
 
@@ -177,6 +196,18 @@ device, and compilation settings. Software or driver updates may require
 recompilation, and cache hits still require some loading and device initialization.
 `--verbose` prints the compilation cache directory. This works with `--offline`
 and adds no network access or Python dependencies.
+
+Model loading and compilation happen once per CLI invocation, before any files
+are processed. All files in a recursive or explicit batch reuse the same loaded
+Whisper pipeline. Each new invocation loads the pipeline again, reusing compatible
+compiled artifacts from the disk cache.
+
+During preparation, an interactive terminal shows an animated spinner and elapsed
+time, followed by `Model ready (<device>).` on success. OpenVINO does not expose
+a reliable compilation percentage. The spinner runs in a small display-only
+helper process so it continues moving while native compilation holds Python's
+interpreter lock. The helper does not load or compile a model. Redirected stderr
+receives plain preparation/readiness messages.
 
 Options include `--language`, `-R` / `--recursive`, `--no-silence-detect`, the
 `--vad-*` controls, and `--verbose`. The Whisper task is always `transcribe`;
