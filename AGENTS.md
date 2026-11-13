@@ -44,9 +44,11 @@ out of scope. Do not restore these dependencies for file transcription.
   main process. Keep freeze_support() before CLI imports in the frozen entrypoint.
 - Write UTF-8 output beside each input: `--format srt` (default) produces `.srt`
   subtitles; `--format txt` produces plain `.txt` speech segments without timestamps.
-  `--output-dir` is an optional location override. Ask `Overwrite? (Y/n)`
-  before replacing existing output; Enter means yes, No skips without error.
-  `-y` / `--yes` bypasses prompts. Preserve the original until replacement succeeds.
+  `--output-dir` is an optional location override. Replace 0-byte outputs without
+  asking. Recursive mode always skips non-empty outputs, even with `--yes`, and
+  avoids loading the model if all outputs exist. Explicit file inputs ask
+  `Overwrite? (Y/n)` for non-empty output; Enter means yes, No skips without error.
+  `-y` / `--yes` bypasses those prompts. Preserve originals until replacement succeeds.
 - Decode only the first audio stream in bounded windows of at most 30 seconds.
   Do not accumulate complete audio or subtitle history in memory.
 - Always request Whisper segment timestamps and preserve the original media
@@ -55,6 +57,8 @@ out of scope. Do not restore these dependencies for file transcription.
 - Render terminal progress with tqdm on stderr, disabled for redirected output;
   keep progress callbacks independent of terminal presentation in the service.
 - Keep srt2txt.py standalone and standard-library-only; include it in release archives.
+  Folder input converts SRT files recursively to adjacent TXT files, skipping
+  non-empty outputs and replacing empty ones without asking.
 
 ## Validation and packaging
 

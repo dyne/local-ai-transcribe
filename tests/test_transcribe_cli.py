@@ -500,7 +500,7 @@ def test_txt_format_writes_plain_text_beside_input(tmp_path, monkeypatch, runtim
     assert captured.out == ""
 
 
-def test_recursive_txt_output_directory_and_yes_overwrite(tmp_path, monkeypatch, runtime):
+def test_recursive_txt_output_directory_skips_existing_even_with_yes(tmp_path, monkeypatch, runtime):
     root = tmp_path / "media"
     nested = root / "nested"
     nested.mkdir(parents=True)
@@ -510,7 +510,8 @@ def test_recursive_txt_output_directory_and_yes_overwrite(tmp_path, monkeypatch,
     (output_dir / "one.txt").write_text("old transcript", encoding="utf-8")
     monkeypatch.setattr(cli, "execute_transcribe_file", transcribe)
     assert cli.main(["-R", str(root), "--format", "txt", "--output-dir", str(output_dir), "--yes"]) == 0
-    assert all((output_dir / path.with_suffix(".txt").name).read_text(encoding="utf-8") == "caffè\n" for path in paths)
+    assert (output_dir / "one.txt").read_text(encoding="utf-8") == "old transcript"
+    assert (output_dir / "two.txt").read_text(encoding="utf-8") == "caffè\n"
     assert not any(path.with_suffix(".txt").exists() for path in paths)
     assert len(runtime[0]) == 1
 
@@ -536,3 +537,82 @@ def test_txt_output_cannot_replace_media_with_txt_extension(tmp_path, runtime):
     path = media(tmp_path, "recording.txt")
     assert cli.main([str(path), "--format", "txt", "--yes"]) == 2
     assert path.read_bytes() == b"media"
+
+
+@pytest.mark.parametrize("output_format", ["srt", "txt"])
+@pytest.mark.parametrize("recursive", [False, True])
+def test_empty_outputs_are_replaced_without_questions(tmp_path, monkeypatch, runtime, output_format, recursive):
+    path = media(tmp_path, "speech.wav")
+    target = path.with_suffix(f".{output_format}")
+    target.touch()
+
+    def unexpected_input():
+        raise AssertionError("Empty output must never prompt")
+
+    monkeypatch.setattr("builtins.input", unexpected_input)
+    monkeypatch.setattr(cli, "execute_transcribe_file", transcribe)
+    inputs = ["-R", str(tmp_path)] if recursive else [str(path)]
+    assert cli.main([*inputs, "--format", output_format]) == 0
+    assert "caffè" in target.read_text(encoding="utf-8")
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("output_format", ["srt", "txt"])
+@pytest.mark.parametrize("assume_yes", [False, True])
+def test_recursive_skips_only_nonempty_selected_outputs(tmp_path, monkeypatch, runtime, output_format, assume_yes):
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    existing = media(tmp_path, "done.mp4")
+    empty = media(nested, "empty.wav")
+    missing = media(nested, "missing.mp3")
+    existing.with_suffix(f".{output_format}").write_text("keep output", encoding="utf-8")
+    empty.with_suffix(f".{output_format}").touch()
+    other_format = "txt" if output_format == "srt" else "srt"
+    missing.with_suffix(f".{other_format}").write_text("keep other format", encoding="utf-8")
+    calls = []
+
+    def unexpected_input():
+        raise AssertionError("Recursive mode must never ask about existing output")
+
+    def capture(**kwargs):
+        calls.append(kwargs["request"].input_path)
+        return transcribe(**kwargs)
+
+    monkeypatch.setattr("builtins.input", unexpected_input)
+    monkeypatch.setattr(cli, "execute_transcribe_file", capture)
+    args = ["-R", str(tmp_path), "--format", output_format]
+    if assume_yes:
+        args.append("--yes")
+    assert cli.main(args) == 0
+    assert calls == [empty, missing]
+    assert existing.with_suffix(f".{output_format}").read_text(encoding="utf-8") == "keep output"
+    assert missing.with_suffix(f".{other_format}").read_text(encoding="utf-8") == "keep other format"
+    assert len(runtime[0]) == 1
+
+
+@pytest.mark.parametrize("output_format", ["srt", "txt"])
+def test_fully_completed_recursive_batch_does_not_load_model(tmp_path, runtime, output_format, capsys):
+    path = media(tmp_path, "done.mp4")
+    target = path.with_suffix(f".{output_format}")
+    target.write_text("keep output", encoding="utf-8")
+    assert cli.main(["-R", str(tmp_path), "--format", output_format, "--yes"]) == 0
+    assert not runtime[0]
+    assert "Skipped:" in capsys.readouterr().err
+    assert target.read_text(encoding="utf-8") == "keep output"
+
+
+def test_recursive_collision_created_during_batch_is_skipped(tmp_path, monkeypatch, runtime):
+    paths = [media(tmp_path, name) for name in ("speech.mp4", "speech.wav")]
+    calls = []
+
+    def unexpected_input():
+        raise AssertionError("Recursive collisions must not prompt")
+
+    def capture(**kwargs):
+        calls.append(kwargs["request"].input_path)
+        return transcribe(**kwargs)
+
+    monkeypatch.setattr("builtins.input", unexpected_input)
+    monkeypatch.setattr(cli, "execute_transcribe_file", capture)
+    assert cli.main(["-R", str(tmp_path), "--yes"]) == 0
+    assert calls == [paths[0]]

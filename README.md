@@ -75,9 +75,15 @@ or a scan with no eligible files is reported before loading a model. Direct file
 inputs remain supported without `-R`, regardless of their extension.
 
 Each discovered file gets its selected `.srt` or `.txt` beside it. With `--output-dir`, outputs use
-that single directory; matching basenames can collide and trigger an overwrite prompt.
+that single directory; matching basenames share an output, so later files are
+skipped once that output contains text.
 
-When the selected output file already exists, the CLI asks:
+Empty (0-byte) output files are always replaced without asking. In recursive
+mode, non-empty outputs are always skipped, including when `--yes` is set.
+Only the selected format matters: an existing `.srt` does not prevent producing
+`.txt`, and vice versa. If every output is complete, the model is not loaded.
+
+For explicit file inputs, when the selected output already contains data, the CLI asks:
 
 ```text
 File exists: videos/movie.srt
@@ -86,10 +92,10 @@ Overwrite? (Y/n)
 
 Press Enter or answer `y` / `yes` to replace it, or `n` / `no` to skip that input
 and continue the batch. Skipping is not an error. If no answer can be read, the
-file is skipped. Use `-y` / `--yes` to answer yes to all prompts:
+file is skipped. Use `-y` / `--yes` to overwrite explicit file outputs without asking:
 
 ```powershell
-.\.venv\Scripts\python.exe .\local-ai-transcribe.py -R "C:\Videos" --yes
+.\.venv\Scripts\python.exe .\local-ai-transcribe.py "C:\Videos\movie.mp4" --yes
 ```
 
 Approved overwrites are generated in a temporary file beside the original and
@@ -118,11 +124,17 @@ lines into one text line per cue. Numeric captions are preserved.
 ```powershell
 py -3.11 .\srt2txt.py movie.srt
 py -3.11 .\srt2txt.py movie.srt -o movie.txt
+py -3.11 .\srt2txt.py "C:\Videos"
 ```
 
-Without `-o`, text is printed to stdout. With `-o`, a new UTF-8 file is created;
-existing files are not overwritten. This converter is also included in release
-archives alongside the executable.
+For a single file, text is printed to stdout unless `-o` specifies a UTF-8 output
+file. Empty outputs are replaced; non-empty outputs are preserved.
+
+Passing a folder automatically finds `.srt` files recursively, including uppercase
+extensions, and creates a matching `.txt` beside each one. Non-empty `.txt` files
+are skipped without asking; empty ones are replaced. Conversion continues after
+individual file errors and returns a nonzero exit status if any fail. `-o` is only
+available for single-file conversion. The converter is included in release archives.
 
 ## Large and long MP4 files
 

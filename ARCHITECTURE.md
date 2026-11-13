@@ -39,9 +39,12 @@ an open-ended last segment ends at the window boundary. SRT serialization rounds
 to milliseconds, keeps cues ordered and non-overlapping, and writes immediately.
 
 File failures remove incomplete output and allow the batch to continue. Existing
-subtitles require confirmation (default Yes), unless `-y` / `--yes` is set.
-Declined or unanswered prompts skip the file. Approved overwrites use a temporary
-file in the same directory and replace the original only after success.
+outputs of 0 bytes are replaced without asking. Recursive batches skip non-empty
+outputs in the selected format, even with `--yes`; an all-skipped batch returns
+before loading the model. Explicit inputs require confirmation (default Yes) for
+non-empty outputs, unless `-y` / `--yes` is set. Declined or unanswered prompts
+skip the file. Replacements use a temporary file in the same directory and
+replace the original only after success.
 Model setup failures stop the batch. Resume is
 not implemented; failed or interrupted files must restart. Independent windows
 can split utterances and lose cross-window context.
@@ -63,7 +66,10 @@ Preserved invariants:
 
 The standalone `srt2txt.py` utility converts existing SRT files using only the
 standard library. It removes indices, time codes, and basic styling, and joins
-wrapped caption lines. It prints to stdout or creates a new file with `-o`.
+wrapped caption lines. Single-file input prints to stdout or writes with `-o`.
+Folder input recursively converts SRT files to adjacent TXT files, skipping
+non-empty outputs and replacing empty outputs atomically. Each file streams
+independently, and conversion continues after individual failures.
 
 The CLI uses `tqdm` for terminal progress; the transcription service reports
 timeline progress through a callback without depending on terminal presentation.

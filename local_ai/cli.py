@@ -65,13 +65,21 @@ def confirm_overwrite(path: Path) -> bool:
         tqdm.write("Please answer y or n.", file=sys.stderr)
 
 
-def open_transcription_output(path: Path, *, assume_yes: bool) -> TextIO | None:
-    """Create new output, or stage an approved overwrite beside the original."""
+def transcription_output_path(path: Path, args: argparse.Namespace) -> Path:
+    """Resolve the selected output format and optional directory override."""
+    return (args.output_dir / path.name if args.output_dir else path).with_suffix(f".{args.output_format}")
+
+
+def open_transcription_output(path: Path, *, assume_yes: bool, recursive: bool = False) -> TextIO | None:
+    """Replace empty files, skip recursive results, or ask about explicit results."""
     try:
         return path.open("x", encoding="utf-8", newline="\n")
     except FileExistsError:
-        if not assume_yes and not confirm_overwrite(path):
-            return None
+        if not path.is_file():
+            raise
+        if path.stat().st_size > 0:
+            if recursive or (not assume_yes and not confirm_overwrite(path)):
+                return None
         return tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", newline="\n", delete=False,
             dir=path.parent, prefix=".transcribe-", suffix=f"{path.suffix}.tmp",
@@ -86,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("input_paths", type=Path, nargs="*", help="Local media files, or directories when --recursive is set.")
     parser.add_argument("-R", "--recursive", action="store_true", help="Find eligible audio/video files recursively within input directories.")
-    parser.add_argument("-y", "--yes", action="store_true", help="Answer yes to all prompts, including overwriting existing output files.")
+    parser.add_argument("-y", "--yes", action="store_true", help="Approve overwrite prompts for explicit files; recursive mode still skips non-empty output.")
     parser.add_argument("--format", dest="output_format", choices=["srt", "txt"], default="srt", help="Output format (default: srt).")
     parser.add_argument("--device", default="NPU,GPU,CPU", help="Device preference order, or 'list' (default: NPU,GPU,CPU).")
     parser.add_argument("--model", help="OpenVINO model directory or Hugging Face org/repo; otherwise download the device default.")
@@ -148,7 +156,7 @@ def run_files(args: argparse.Namespace) -> int:
             fail(f"Input file not found or not a regular file: {path}", exit_code=2)
             status = status or 2
             continue
-        output_path = (args.output_dir / path.name if args.output_dir else path).with_suffix(f".{args.output_format}")
+        output_path = transcription_output_path(path, args)
         if output_path.resolve() == path.resolve():
             fail(f"Output would replace input: {path}", exit_code=2)
             status = status or 2
@@ -168,7 +176,7 @@ def run_files(args: argparse.Namespace) -> int:
         completed = False
         working_path = output_path
         try:
-            output = open_transcription_output(output_path, assume_yes=args.yes)
+            output = open_transcription_output(output_path, assume_yes=args.yes, recursive=args.recursive)
             if output is None:
                 tqdm.write(f"Skipped: {path}", file=sys.stderr)
                 continue
@@ -235,10 +243,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.recursive and args.input_paths:
         try:
             args.input_paths = discover_media_files(args.input_paths)
+            if not args.input_paths:
+                parser.error("no eligible audio or video files found in the input directories")
+            if args.device.strip().lower() != "list":
+                pending = []
+                for path in args.input_paths:
+                    output_path = transcription_output_path(path, args)
+                    if output_path.is_file() and output_path.stat().st_size > 0:
+                        tqdm.write(f"Skipped: {path} (existing output: {output_path})", file=sys.stderr)
+                    else:
+                        pending.append(path)
+                args.input_paths = pending
+                if not pending:
+                    return 0
         except (OSError, ValueError) as exc:
             parser.error(str(exc))
-        if not args.input_paths:
-            parser.error("no eligible audio or video files found in the input directories")
     profile = start_py_spy_profile(enabled=args.profile, label="local-ai-transcribe", output_path=args.profile_output)
     try:
         return run_files(args)
